@@ -1,5 +1,10 @@
-use std::{fs, io::Result, process::{Command, Stdio}, thread, time::{Duration, SystemTime}};
+use std::{io::Result, path::PathBuf, thread, time::Duration};
 use clap::{Parser, ValueHint};
+use waiters::{File, Stdin};
+
+mod waiters;
+
+const SLEEP_DURATION: Duration = Duration::from_millis(500);
 
 /// Prevents the spread of commands if they ever get off the island
 #[derive(Parser)]
@@ -11,7 +16,7 @@ struct Input {
 
     /// Use file modified timestamp for lysine check
     #[clap(value_hint = ValueHint::FilePath)]
-    file: String,
+    file: PathBuf,
 
     /// Command (and args) to run
     #[clap(required = true)]
@@ -21,62 +26,25 @@ struct Input {
 fn main() -> Result<()> {
     let args: Input = Input::parse();
     let expir_duration = Duration::from_secs(args.max_age);
-    let sleep_duration = Duration::from_millis(std::cmp::max((expir_duration.as_millis() / 10).try_into().unwrap(), 100));
-    let mut watchers: Vec<_> = Vec::new();
-    let path = &args.file;
 
-    let f = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("{}: {}", path, e);
-            std::process::exit(e.raw_os_error().unwrap());
-        }
+    let mut contingency = if args.file.as_os_str() == "-" {
+        Stdin::new(args.command)
+    } else {
+        File::new(&args.file.as_path(), args.command)
     };
 
-    watchers.push(move || {
-        let metadata = match f.metadata() {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                eprintln!("{}: {}", path, e);
-                std::process::exit(e.raw_os_error().unwrap());
-            }
+    contingency.start();
+    
+    loop {
+        match contingency.last_dose() {
+            Some(dur) => if dur > expir_duration { break; },
+            None => break,
         };
-        let mod_time = match metadata.modified() {
-            Ok(mod_time) => mod_time,
-            Err(e) => {
-                eprintln!("{}: {}", path, e);
-                std::process::exit(e.raw_os_error().unwrap());
-            }
-        };
-
-        let time_since_modified = match SystemTime::now().duration_since(mod_time) {
-            Ok(time_since_modified) => time_since_modified,
-            Err(e) => e.duration()
-        };
-
-        time_since_modified < expir_duration
-    });
-
-    let mut child = Command::new(args.command.first().unwrap())
-        .args(&args.command[1..])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-
-    'outer: loop {
-
-        for watcher in &watchers {
-            if watcher() == false {
-                break 'outer;
-            }
-        }
-
-        thread::sleep(sleep_duration)
+        
+        thread::sleep(SLEEP_DURATION);
     }
 
-    let _ = child.kill();
+    let _ = contingency.kill();
 
     Ok(())
 }
