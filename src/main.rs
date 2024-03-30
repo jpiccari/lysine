@@ -18,6 +18,10 @@ struct Input {
     #[clap(value_hint = ValueHint::FilePath)]
     file: PathBuf,
 
+    /// Initialization grace time in seconds
+    #[clap(short, long, default_value_t = 0)]
+    grace_time: u64,
+
     /// Command (and args) to run
     #[clap(required = true)]
     command: Vec<String>,
@@ -34,6 +38,10 @@ fn main() -> Result<()> {
     };
 
     contingency.start();
+
+    if args.grace_time > 0 {
+        thread::sleep(Duration::from_secs(args.grace_time));
+    }
     
     loop {
         match contingency.last_dose() {
